@@ -2,6 +2,8 @@
 
 Adds `/r2-share` to export the current pi session to a local temp file and upload/share it through Cloudflare R2 instead of GitHub Gist/pi.dev.
 
+Adds `/r2-sessions` to browse sessions previously uploaded with this extension, show their share URLs, and delete uploaded R2 objects.
+
 No R2 account/bucket/public URL details are hardcoded in the extension. Configure them with environment variables.
 
 ## Required env vars
@@ -54,6 +56,16 @@ Default output is HTML. For raw JSONL:
 /r2-share --jsonl
 ```
 
+Browse uploaded sessions:
+
+```text
+/r2-sessions
+```
+
+The browser loads objects from the configured R2 bucket and defaults to sessions uploaded from the current cwd. Press `Tab` to toggle all uploaded sessions, `Enter` to copy the selected share URL to your clipboard, `i` to show/hide the selected object's R2 ID, `d` to delete the selected uploaded object, `D` to delete all visible uploaded objects, and `Esc` to close.
+
+The browser uses pi's session name when available (`/name` / `pi.setSessionName()`), otherwise it falls back to the first user message or object key.
+
 ## Local file location
 
 The extension uses the OS temp directory automatically:
@@ -88,4 +100,20 @@ JSONL shares keep an extension:
 $PI_SHARE_PUBLIC_URL/<unique-id>.jsonl
 ```
 
-The unique ID is generated locally with `crypto.randomUUID()`, so the extension does not list or search local files or R2 objects and will not overwrite existing shares in practice.
+The unique ID is generated locally with `crypto.randomUUID()`, so the extension does not overwrite existing shares in practice.
+
+## Uploaded session registry
+
+Successful uploads are tracked locally as a metadata cache. `/r2-sessions` still lists the configured R2 bucket directly, then uses the local registry only to enrich matching objects:
+
+```text
+~/.pi/agent/pi-share/uploads.json
+```
+
+Override with:
+
+```bash
+export PI_SHARE_REGISTRY=/path/to/uploads.json
+```
+
+Older uploaded HTML/JSONL session objects are discovered from R2 directly. If a remote object cannot be parsed as a pi session export, it appears with its object key and unknown cwd.

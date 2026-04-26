@@ -1,11 +1,23 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { Key, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
+import {
+  addShareRecord,
+  filterRecords,
+  getSessionTitle,
+  mergeShareRecords,
+  readRegistry,
+  remoteObjectToShareRecord,
+  removeShareRecords,
+  type Format,
+  type RemoteObject,
+  type ShareRecord,
+} from "./core";
 
-type Format = "html" | "jsonl";
 type Mode = "auto" | "wrangler" | "s3";
 type RunResult = { code: number | null; stdout: string; stderr: string };
 
@@ -13,6 +25,11 @@ type ShareOptions = {
   format?: Format;
   mode?: Mode;
 };
+
+type BrowserAction =
+  | { type: "close" }
+  | { type: "delete"; record: ShareRecord }
+  | { type: "delete-visible"; records: ShareRecord[] };
 
 function parseArgs(args: string): ShareOptions {
   const out: ShareOptions = {};
@@ -194,6 +211,13 @@ async function uploadWithWrangler(bucket: string, key: string, file: string, con
   if (res.code !== 0) throw new Error(`wrangler upload failed (${res.code})\n${res.stderr || res.stdout}`.trim());
 }
 
+async function deleteWithWrangler(bucket: string, key: string): Promise<void> {
+  const wranglerBin = process.env.PI_SHARE_WRANGLER_BIN || "wrangler";
+  const args = ["r2", "object", "delete", `${bucket}/${key}`, "--remote"];
+  const res = await run(wranglerBin, args, { timeout: Number(process.env.PI_SHARE_DELETE_TIMEOUT_MS || 120_000) });
+  if (res.code !== 0) throw new Error(`wrangler delete failed (${res.code})\n${res.stderr || res.stdout}`.trim());
+}
+
 function hmac(key: Buffer | string, data: string): Buffer {
   return createHmac("sha256", key).update(data).digest();
 }
@@ -207,13 +231,16 @@ function awsDate(date: Date): { amz: string; short: string } {
   return { amz: iso, short: iso.slice(0, 8) };
 }
 
-async function uploadWithS3(bucket: string, key: string, file: string, contentType: string): Promise<void> {
+function r2S3Config() {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || process.env.PI_SHARE_ACCOUNT_ID;
   const accessKeyId = process.env.R2_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
   const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY;
   if (!accountId || !accessKeyId || !secretAccessKey) throw new Error("S3 mode needs CLOUDFLARE_ACCOUNT_ID, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY env vars");
+  return { accountId, accessKeyId, secretAccessKey };
+}
 
-  const body = await readFile(file);
+function signedS3Headers(method: "PUT" | "DELETE", bucket: string, key: string, body: Buffer | string, contentType?: string) {
+  const { accountId, accessKeyId, secretAccessKey } = r2S3Config();
   const now = new Date();
   const { amz, short } = awsDate(now);
   const region = "auto";
@@ -222,10 +249,11 @@ async function uploadWithS3(bucket: string, key: string, file: string, contentTy
   const encodedKey = key.split("/").map(encodeURIComponent).join("/");
   const pathname = `/${bucket}/${encodedKey}`;
   const payloadHash = sha256Hex(body);
-  const headers: Record<string, string> = { host, "content-type": contentType, "x-amz-content-sha256": payloadHash, "x-amz-date": amz };
+  const headers: Record<string, string> = { host, "x-amz-content-sha256": payloadHash, "x-amz-date": amz };
+  if (contentType) headers["content-type"] = contentType;
   const signedHeaders = Object.keys(headers).sort().join(";");
   const canonicalHeaders = Object.keys(headers).sort().map((h) => `${h}:${headers[h]}\n`).join("");
-  const canonicalRequest = ["PUT", pathname, "", canonicalHeaders, signedHeaders, payloadHash].join("\n");
+  const canonicalRequest = [method, pathname, "", canonicalHeaders, signedHeaders, payloadHash].join("\n");
   const scope = `${short}/${region}/${service}/aws4_request`;
   const stringToSign = ["AWS4-HMAC-SHA256", amz, scope, sha256Hex(canonicalRequest)].join("\n");
   const kDate = hmac(`AWS4${secretAccessKey}`, short);
@@ -234,9 +262,20 @@ async function uploadWithS3(bucket: string, key: string, file: string, contentTy
   const kSigning = hmac(kService, "aws4_request");
   const signature = createHmac("sha256", kSigning).update(stringToSign).digest("hex");
   const authorization = `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  return { url: `https://${host}${pathname}`, headers: { ...headers, authorization } };
+}
 
-  const res = await fetch(`https://${host}${pathname}`, { method: "PUT", headers: { ...headers, authorization }, body });
+async function uploadWithS3(bucket: string, key: string, file: string, contentType: string): Promise<void> {
+  const body = await readFile(file);
+  const signed = signedS3Headers("PUT", bucket, key, body, contentType);
+  const res = await fetch(signed.url, { method: "PUT", headers: signed.headers, body });
   if (!res.ok) throw new Error(`R2 S3 upload failed: HTTP ${res.status} ${res.statusText}\n${await res.text()}`);
+}
+
+async function deleteWithS3(bucket: string, key: string): Promise<void> {
+  const signed = signedS3Headers("DELETE", bucket, key, Buffer.alloc(0));
+  const res = await fetch(signed.url, { method: "DELETE", headers: signed.headers });
+  if (!res.ok) throw new Error(`R2 S3 delete failed: HTTP ${res.status} ${res.statusText}\n${await res.text()}`);
 }
 
 async function uploadObject(bucket: string, key: string, file: string, contentType: string, mode: Mode): Promise<void> {
@@ -246,6 +285,143 @@ async function uploadObject(bucket: string, key: string, file: string, contentTy
     return uploadWithS3(bucket, key, file, contentType);
   }
   return uploadWithWrangler(bucket, key, file, contentType);
+}
+
+async function deleteObject(bucket: string, key: string, mode: Mode): Promise<void> {
+  if (mode === "s3") return deleteWithS3(bucket, key);
+  if (mode === "wrangler") return deleteWithWrangler(bucket, key);
+  if ((process.env.R2_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID) && (process.env.R2_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY)) {
+    return deleteWithS3(bucket, key);
+  }
+  return deleteWithWrangler(bucket, key);
+}
+
+async function listRemoteObjects(bucket: string, publicBaseUrl: string): Promise<RemoteObject[]> {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || process.env.PI_SHARE_ACCOUNT_ID;
+  if (!accountId) throw new Error("Remote listing needs CLOUDFLARE_ACCOUNT_ID or PI_SHARE_ACCOUNT_ID");
+
+  const token = await getCloudflareApiToken();
+  const objects: RemoteObject[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const url = new URL(`https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets/${bucket}/objects`);
+    url.searchParams.set("per_page", "1000");
+    if (cursor) url.searchParams.set("cursor", cursor);
+
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const data: any = await res.json().catch(() => undefined);
+    if (!res.ok || !data?.success) {
+      const detail = data?.errors?.map((e: any) => e.message).join("; ") || `${res.status} ${res.statusText}`;
+      throw new Error(`Cloudflare R2 list failed: ${detail}`);
+    }
+
+    for (const item of data.result || []) {
+      if (typeof item.key !== "string") continue;
+      objects.push({
+        key: item.key,
+        url: publicUrl(publicBaseUrl, item.key),
+        contentType: item.http_metadata?.contentType,
+        lastModified: item.last_modified,
+      });
+    }
+
+    cursor = data.result_info?.is_truncated ? data.result_info.cursor : undefined;
+  } while (cursor);
+
+  return objects;
+}
+
+async function getCloudflareApiToken(): Promise<string> {
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  if (apiToken) return apiToken;
+
+  const wranglerBin = process.env.PI_SHARE_WRANGLER_BIN || "wrangler";
+  await run(wranglerBin, ["r2", "bucket", "list"], { timeout: Number(process.env.PI_SHARE_LIST_TIMEOUT_MS || 120_000) }).catch(() => undefined);
+
+  const configPath = path.join(homedir(), ".config", ".wrangler", "config", "default.toml");
+  const config = await readFile(configPath, "utf8");
+  const match = config.match(/oauth_token\s*=\s*"([^"]+)"/);
+  if (!match) throw new Error("Could not find Wrangler OAuth token. Run `wrangler login` or set CLOUDFLARE_API_TOKEN.");
+  return match[1];
+}
+
+async function loadSessionRecords(): Promise<ShareRecord[]> {
+  const local = await readRegistry();
+  const bucket = requiredEnv("PI_SHARE_BUCKET");
+  const publicBaseUrl = requiredEnv("PI_SHARE_PUBLIC_URL");
+  const remoteObjects = await listRemoteObjects(bucket, publicBaseUrl);
+  const remote = await Promise.all(remoteObjects.map((object) => remoteObjectToShareRecord(object, fetchText)));
+  return mergeShareRecords(local, remote);
+}
+
+async function fetchText(url: string): Promise<string> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+  return res.text();
+}
+
+async function copyToClipboard(text: string): Promise<string> {
+  const timeout = Number(process.env.PI_SHARE_CLIPBOARD_TIMEOUT_MS || 5_000);
+
+  if (process.platform === "darwin" && await commandExists("pbcopy")) {
+    const result = await runWithInput("pbcopy", [], text, timeout);
+    if (result.code === 0) return "pbcopy";
+  }
+
+  if (process.platform === "win32" && await commandExists("clip.exe")) {
+    const result = await runWithInput("clip.exe", [], text, timeout);
+    if (result.code === 0) return "clip.exe";
+  }
+
+  const linuxCommands = [
+    { command: "wl-copy", args: "" },
+    { command: "xclip", args: "-selection clipboard" },
+    { command: "xsel", args: "--clipboard --input" },
+  ];
+  for (const candidate of linuxCommands) {
+    if (!await commandExists(candidate.command)) continue;
+    const result = await run("sh", ["-lc", `printf %s ${shellQuote(text)} | ${candidate.command} ${candidate.args} >/dev/null 2>&1 &`], { timeout });
+    if (result.code === 0) return candidate.command;
+  }
+
+  throw new Error("No clipboard command found (tried pbcopy, wl-copy, xclip, xsel, clip.exe)");
+}
+
+async function commandExists(command: string): Promise<boolean> {
+  const result = process.platform === "win32"
+    ? await run("where", [command], { timeout: 5_000 }).catch(() => ({ code: 1 }))
+    : await run("sh", ["-lc", `command -v ${shellQuote(command)} >/dev/null 2>&1`], { timeout: 5_000 }).catch(() => ({ code: 1 }));
+  return result.code === 0;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function runWithInput(command: string, args: readonly string[], input: string, timeout: number): Promise<RunResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, [...args], { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 250).unref?.();
+    }, timeout);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) stderr += `\nTimed out after ${timeout}ms`;
+      resolve({ code, stdout, stderr });
+    });
+    child.stdin.end(input);
+  });
 }
 
 function makeShareId(): string {
@@ -289,6 +465,18 @@ async function doShare(args: string, ctx: ExtensionCommandContext, pi: Extension
     await uploadObject(bucket, objectKey, outputPath, contentType, mode);
 
     const shareUrl = publicUrl(publicBaseUrl, objectKey);
+    const title = pi.getSessionName?.() || await getSessionTitle(sessionFile);
+    await addShareRecord({
+      id: shareId,
+      key: objectKey,
+      url: shareUrl,
+      cwd: ctx.cwd,
+      sessionFile,
+      title,
+      format,
+      uploadedAt: new Date().toISOString(),
+    });
+
     ctx.ui.notify(`Saved: ${outputPath}\nShare URL: ${shareUrl}`, "info");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -296,9 +484,170 @@ async function doShare(args: string, ctx: ExtensionCommandContext, pi: Extension
   }
 }
 
+async function doSessions(args: string, ctx: ExtensionCommandContext) {
+  await ctx.waitForIdle();
+  const opts = parseArgs(args);
+  const mode = opts.mode || (process.env.PI_SHARE_MODE as Mode) || "auto";
+
+  if (!ctx.hasUI) {
+    const records = filterRecords(await loadSessionRecords(), ctx.cwd, args.includes("--all"));
+    ctx.ui.notify(records.map((r) => `${r.title}\n${r.url}`).join("\n\n") || "No uploaded R2 sessions found", "info");
+    return;
+  }
+
+  let showAll = args.includes("--all");
+  let selected = 0;
+
+  while (true) {
+    let records: ShareRecord[];
+    try {
+      ctx.ui.notify("r2-sessions: loading R2 objects…", "info");
+      records = await loadSessionRecords();
+    } catch (err) {
+      ctx.ui.notify(`r2-sessions remote listing failed, showing local registry only: ${err instanceof Error ? err.message : String(err)}`, "warning");
+      records = await readRegistry();
+    }
+    const visible = filterRecords(records, ctx.cwd, showAll);
+    if (selected >= visible.length) selected = Math.max(0, visible.length - 1);
+
+    const action = await ctx.ui.custom<BrowserAction>((tui, theme, _keybindings, done) => {
+      let cached: string[] | undefined;
+      let showSelectedId = false;
+      let copyStatus: { kind: "success" | "error" | "pending"; message: string; token: number } | undefined;
+      const refresh = () => {
+        cached = undefined;
+        tui.requestRender();
+      };
+
+      const currentVisible = () => filterRecords(records, ctx.cwd, showAll);
+      const setCopyStatus = (kind: "success" | "error" | "pending", message: string) => {
+        const token = Date.now();
+        copyStatus = { kind, message, token };
+        refresh();
+        if (kind !== "pending") {
+          setTimeout(() => {
+            if (copyStatus?.token === token) {
+              copyStatus = undefined;
+              refresh();
+            }
+          }, 2_500);
+        }
+      };
+
+      function handleInput(data: string) {
+        const visible = currentVisible();
+        if (matchesKey(data, Key.escape)) return done({ type: "close" });
+        if (matchesKey(data, Key.tab)) {
+          showAll = !showAll;
+          selected = 0;
+          return refresh();
+        }
+        if (matchesKey(data, Key.up)) {
+          selected = Math.max(0, selected - 1);
+          return refresh();
+        }
+        if (matchesKey(data, Key.down)) {
+          selected = Math.min(visible.length - 1, selected + 1);
+          return refresh();
+        }
+        if (matchesKey(data, Key.enter) && visible[selected]) {
+          const record = visible[selected];
+          setCopyStatus("pending", "Copying share URL…");
+          copyToClipboard(record.url)
+            .then(() => setCopyStatus("success", "✓ Copied share URL to clipboard"))
+            .catch((err) => setCopyStatus("error", `Could not copy automatically: ${err instanceof Error ? err.message : String(err)}`));
+          return;
+        }
+        if (data === "i" && visible[selected]) {
+          showSelectedId = !showSelectedId;
+          return refresh();
+        }
+        if (data === "d" && visible[selected]) return done({ type: "delete", record: visible[selected] });
+        if (data === "D" && visible.length > 0) return done({ type: "delete-visible", records: visible });
+      }
+
+      function render(width: number) {
+        if (cached) return cached;
+        const visible = currentVisible();
+        if (selected >= visible.length) selected = Math.max(0, visible.length - 1);
+        const lines: string[] = [];
+        const add = (line = "") => lines.push(truncateToWidth(line, width));
+        add(theme.fg("accent", "─".repeat(width)));
+        add(`${theme.fg("accent", theme.bold(" R2 sessions"))} ${theme.fg("muted", showAll ? "all uploaded sessions" : `cwd: ${ctx.cwd}`)}`);
+        add(theme.fg("dim", " Tab toggle cwd/all • ↑↓ select • Enter copy URL • i show ID • d delete • D delete visible • Esc close"));
+        if (copyStatus) {
+          const color = copyStatus.kind === "success" ? "success" : copyStatus.kind === "error" ? "warning" : "muted";
+          add(theme.fg(color, ` ${copyStatus.message}`));
+        }
+        add("");
+
+        if (visible.length === 0) {
+          add(theme.fg("warning", showAll ? " No uploaded R2 sessions found." : " No uploaded R2 sessions for this cwd."));
+        } else {
+          for (let i = 0; i < visible.length; i++) {
+            const record = visible[i];
+            const isSelected = i === selected;
+            const prefix = isSelected ? theme.fg("accent", "> ") : "  ";
+            const title = isSelected ? theme.fg("accent", record.title) : theme.fg("text", record.title);
+            const scope = showAll ? ` ${record.cwd}` : "";
+            add(`${prefix}${title} ${theme.fg("muted", `[${record.format}] ${new Date(record.uploadedAt).toLocaleString()}${scope}`)}`);
+            if (isSelected && showSelectedId) add(`  ${theme.fg("dim", record.key)}`);
+          }
+        }
+
+        add("");
+        add(theme.fg("accent", "─".repeat(width)));
+        cached = lines;
+        return lines;
+      }
+
+      return { render, invalidate: () => { cached = undefined; }, handleInput };
+    });
+
+    if (action.type === "close") return;
+    if (action.type === "delete") {
+      const ok = await ctx.ui.confirm("Delete uploaded session?", `${action.record.title}\n\n${action.record.url}`);
+      if (!ok) continue;
+      try {
+        const bucket = requiredEnv("PI_SHARE_BUCKET");
+        await deleteObject(bucket, action.record.key, mode);
+        await removeShareRecords(new Set([action.record.id]));
+        ctx.ui.notify(`Deleted ${action.record.title}`, "info");
+      } catch (err) {
+        ctx.ui.notify(`r2-sessions delete failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+      }
+      continue;
+    }
+    if (action.type === "delete-visible") {
+      const ok = await ctx.ui.confirm("Delete all visible uploaded sessions?", `This will delete ${action.records.length} R2 object(s).`);
+      if (!ok) continue;
+      const deleted = new Set<string>();
+      for (const record of action.records) {
+        try {
+          const bucket = requiredEnv("PI_SHARE_BUCKET");
+          await deleteObject(bucket, record.key, mode);
+          deleted.add(record.id);
+        } catch (err) {
+          ctx.ui.notify(`Failed deleting ${record.title}: ${err instanceof Error ? err.message : String(err)}`, "error");
+          break;
+        }
+      }
+      if (deleted.size > 0) {
+        await removeShareRecords(deleted);
+        ctx.ui.notify(`Deleted ${deleted.size} uploaded session(s)`, "info");
+      }
+    }
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("r2-share", {
     description: "Export current session and upload/share via Cloudflare R2",
     handler: (args, ctx) => doShare(args, ctx, pi),
+  });
+
+  pi.registerCommand("r2-sessions", {
+    description: "Browse, copy, and delete sessions uploaded to Cloudflare R2",
+    handler: (args, ctx) => doSessions(args, ctx),
   });
 }
