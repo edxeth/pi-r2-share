@@ -1,0 +1,13 @@
+{
+  "name": "pi-share",
+  "version": "0.1.0",
+  "description": "Share pi sessions via Cloudflare R2 instead of GitHub Gist/pi.dev",
+  "keywords": ["pi-package"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  }
+}
