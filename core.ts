@@ -70,6 +70,20 @@ export function mergeShareRecords(local: ShareRecord[], remote: ShareRecord[]): 
     .sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
 }
 
+export async function remoteObjectsToShareRecords(
+  objects: RemoteObject[],
+  local: ShareRecord[],
+  fetchText: (url: string) => Promise<string>,
+): Promise<ShareRecord[]> {
+  const localByKey = new Map(local.map((record) => [record.key, record]));
+  const records = await Promise.all(objects.map((object) => {
+    const localRecord = localByKey.get(object.key);
+    if (localRecord) return Promise.resolve(localRecord);
+    return remoteObjectToShareRecord(object, fetchText);
+  }));
+  return records.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
+}
+
 export async function remoteObjectToShareRecord(object: RemoteObject, fetchText: (url: string) => Promise<string>): Promise<ShareRecord> {
   const format: Format = object.key.endsWith(".jsonl") || object.contentType?.includes("json") || object.contentType?.includes("ndjson") ? "jsonl" : "html";
   const fallbackTitle = object.key;

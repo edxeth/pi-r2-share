@@ -9,6 +9,7 @@ import {
   mergeShareRecords,
   parseExportedHtml,
   remoteObjectToShareRecord,
+  remoteObjectsToShareRecords,
   readRegistry,
   removeShareRecords,
   type ShareRecord,
@@ -80,6 +81,19 @@ describe("R2 upload registry", () => {
     const remote = record({ id: "remote", key: "remote-key" });
 
     expect(mergeShareRecords([stale], [remote]).map((r) => r.key)).toEqual(["remote-key"]);
+  });
+
+  test("uses cached local metadata for known remote objects without fetching content", async () => {
+    const local = record({ key: "known-key", title: "Cached title" });
+    const records = await remoteObjectsToShareRecords(
+      [{ key: "known-key", url: "https://r2.example/known-key", lastModified: "2026-04-26T12:00:00.000Z" }],
+      [local],
+      async () => {
+        throw new Error("should not fetch known objects");
+      },
+    );
+
+    expect(records).toEqual([local]);
   });
 });
 

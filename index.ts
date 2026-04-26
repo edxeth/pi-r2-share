@@ -9,9 +9,8 @@ import {
   addShareRecord,
   filterRecords,
   getSessionTitle,
-  mergeShareRecords,
   readRegistry,
-  remoteObjectToShareRecord,
+  remoteObjectsToShareRecords,
   removeShareRecords,
   type Format,
   type RemoteObject,
@@ -351,8 +350,7 @@ async function loadSessionRecords(): Promise<ShareRecord[]> {
   const bucket = requiredEnv("PI_SHARE_BUCKET");
   const publicBaseUrl = requiredEnv("PI_SHARE_PUBLIC_URL");
   const remoteObjects = await listRemoteObjects(bucket, publicBaseUrl);
-  const remote = await Promise.all(remoteObjects.map((object) => remoteObjectToShareRecord(object, fetchText)));
-  return mergeShareRecords(local, remote);
+  return remoteObjectsToShareRecords(remoteObjects, local, fetchText);
 }
 
 async function fetchText(url: string): Promise<string> {
@@ -497,16 +495,16 @@ async function doSessions(args: string, ctx: ExtensionCommandContext) {
 
   let showAll = args.includes("--all");
   let selected = 0;
+  let records: ShareRecord[];
+  try {
+    ctx.ui.notify("r2-sessions: loading R2 objects…", "info");
+    records = await loadSessionRecords();
+  } catch (err) {
+    ctx.ui.notify(`r2-sessions remote listing failed, showing local registry only: ${err instanceof Error ? err.message : String(err)}`, "warning");
+    records = await readRegistry();
+  }
 
   while (true) {
-    let records: ShareRecord[];
-    try {
-      ctx.ui.notify("r2-sessions: loading R2 objects…", "info");
-      records = await loadSessionRecords();
-    } catch (err) {
-      ctx.ui.notify(`r2-sessions remote listing failed, showing local registry only: ${err instanceof Error ? err.message : String(err)}`, "warning");
-      records = await readRegistry();
-    }
     const visible = filterRecords(records, ctx.cwd, showAll);
     if (selected >= visible.length) selected = Math.max(0, visible.length - 1);
 
@@ -612,6 +610,7 @@ async function doSessions(args: string, ctx: ExtensionCommandContext) {
         const bucket = requiredEnv("PI_SHARE_BUCKET");
         await deleteObject(bucket, action.record.key, mode);
         await removeShareRecords(new Set([action.record.id]));
+        records = records.filter((record) => record.id !== action.record.id && record.key !== action.record.key);
         ctx.ui.notify(`Deleted ${action.record.title}`, "info");
       } catch (err) {
         ctx.ui.notify(`r2-sessions delete failed: ${err instanceof Error ? err.message : String(err)}`, "error");
@@ -634,6 +633,7 @@ async function doSessions(args: string, ctx: ExtensionCommandContext) {
       }
       if (deleted.size > 0) {
         await removeShareRecords(deleted);
+        records = records.filter((record) => !deleted.has(record.id));
         ctx.ui.notify(`Deleted ${deleted.size} uploaded session(s)`, "info");
       }
     }
