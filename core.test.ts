@@ -16,7 +16,7 @@ import {
 } from "./core";
 
 async function tempDir() {
-  return mkdtemp(path.join(tmpdir(), "pi-share-test-"));
+  return mkdtemp(path.join(tmpdir(), "pi-r2-share-test-"));
 }
 
 function record(overrides: Partial<ShareRecord> = {}): ShareRecord {

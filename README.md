@@ -1,4 +1,4 @@
-# pi-share extension
+# pi-r2-share extension
 
 Adds `/r2-share` to export the current pi session to a local temp file and upload/share it through Cloudflare R2 instead of GitHub Gist/pi.dev.
 
@@ -9,7 +9,7 @@ No R2 account/bucket/public URL details are hardcoded in the extension. Configur
 ## Required env vars
 
 ```bash
-export PI_SHARE_BUCKET=pi-share
+export PI_SHARE_BUCKET=pi-r2-share
 export PI_SHARE_PUBLIC_URL=https://your-public-r2-dev-url.r2.dev
 ```
 
@@ -107,7 +107,7 @@ The unique ID is generated locally with `crypto.randomUUID()`, so the extension 
 Successful uploads are tracked locally as a metadata cache. `/r2-sessions` still lists the configured R2 bucket directly, then uses the local registry only to enrich matching objects:
 
 ```text
-~/.pi/agent/pi-share/uploads.json
+~/.pi/agent/pi-r2-share/uploads.json
 ```
 
 Override with:

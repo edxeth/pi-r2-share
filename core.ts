@@ -23,7 +23,7 @@ export type RemoteObject = {
 };
 
 export function defaultRegistryPath(): string {
-  return process.env.PI_SHARE_REGISTRY || path.join(homedir(), ".pi", "agent", "pi-share", "uploads.json");
+  return process.env.PI_SHARE_REGISTRY || path.join(homedir(), ".pi", "agent", "pi-r2-share", "uploads.json");
 }
 
 export async function readRegistry(file = defaultRegistryPath()): Promise<ShareRecord[]> {

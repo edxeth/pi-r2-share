@@ -153,16 +153,16 @@ async function injectSessionMetadata(outputPath: string, ctx: ExtensionCommandCo
 
   const toolsCollapsePatch = String.raw`
   <style>
-    .tools-list.pi-share-tools-collapsible .tools-header {
+    .tools-list.pi-r2-share-tools-collapsible .tools-header {
       cursor: pointer;
     }
-    .tools-list.pi-share-tools-collapsible:not(.expanded) .tools-content > .tool-item:nth-child(n+11) {
+    .tools-list.pi-r2-share-tools-collapsible:not(.expanded) .tools-content > .tool-item:nth-child(n+11) {
       display: none;
     }
-    .tools-list.pi-share-tools-collapsible.expanded .pi-share-tools-expand-hint {
+    .tools-list.pi-r2-share-tools-collapsible.expanded .pi-r2-share-tools-expand-hint {
       display: none;
     }
-    .pi-share-tools-expand-hint {
+    .pi-r2-share-tools-expand-hint {
       color: var(--muted);
       font-style: italic;
       margin-top: 4px;
@@ -173,15 +173,15 @@ async function injectSessionMetadata(outputPath: string, ctx: ExtensionCommandCo
     (() => {
       const previewTools = 10;
       const applyToolsCollapse = () => {
-        document.querySelectorAll('.tools-list:not([data-pi-share-collapse])').forEach((list) => {
+        document.querySelectorAll('.tools-list:not([data-pi-r2-share-collapse])').forEach((list) => {
           const items = list.querySelectorAll('.tools-content > .tool-item');
           if (items.length <= previewTools) return;
 
-          list.dataset.piShareCollapse = '1';
-          list.classList.add('pi-share-tools-collapsible');
+          list.dataset.piR2ShareCollapse = '1';
+          list.classList.add('pi-r2-share-tools-collapsible');
 
           const hint = document.createElement('div');
-          hint.className = 'pi-share-tools-expand-hint';
+          hint.className = 'pi-r2-share-tools-expand-hint';
           hint.textContent = '... (' + (items.length - previewTools) + ' more tools, click to expand)';
           list.appendChild(hint);
 
