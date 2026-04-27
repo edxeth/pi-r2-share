@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import {
   addShareRecord,
+  defaultRegistryPath,
   filterRecords,
   getSessionTitle,
   mergeShareRecords,
@@ -34,6 +35,10 @@ function record(overrides: Partial<ShareRecord> = {}): ShareRecord {
 }
 
 describe("R2 upload registry", () => {
+  test("stores the registry in the .pi cache dir by default", () => {
+    expect(defaultRegistryPath()).toBe(path.join(homedir(), ".pi", "cache", "r2-shares.json"));
+  });
+
   test("records successful uploads and lists newest first", async () => {
     const dir = await tempDir();
     const registry = path.join(dir, "uploads.json");

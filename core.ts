@@ -22,8 +22,12 @@ export type RemoteObject = {
   lastModified?: string;
 };
 
+function cacheDir(): string {
+  return path.join(homedir(), ".pi", "cache");
+}
+
 export function defaultRegistryPath(): string {
-  return process.env.PI_SHARE_REGISTRY || path.join(homedir(), ".pi", "agent", "pi-r2-share", "uploads.json");
+  return process.env.PI_SHARE_REGISTRY || path.join(cacheDir(), "r2-shares.json");
 }
 
 export async function readRegistry(file = defaultRegistryPath()): Promise<ShareRecord[]> {

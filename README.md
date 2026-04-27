@@ -107,13 +107,13 @@ The unique ID is generated locally with `crypto.randomUUID()`, so the extension 
 Successful uploads are tracked locally as a metadata cache. `/r2-sessions` still lists the configured R2 bucket directly, then uses the local registry only to enrich matching objects:
 
 ```text
-~/.pi/agent/pi-r2-share/uploads.json
+~/.pi/cache/r2-shares.json
 ```
 
 Override with:
 
 ```bash
-export PI_SHARE_REGISTRY=/path/to/uploads.json
+export PI_SHARE_REGISTRY=/path/to/r2-shares.json
 ```
 
 Older uploaded HTML/JSONL session objects are discovered from R2 directly. If a remote object cannot be parsed as a pi session export, it appears with its object key and unknown cwd.
