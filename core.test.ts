@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   addShareRecord,
   defaultRegistryPath,
+  emptySessionJsonl,
   filterRecords,
   getSessionTitle,
   mergeShareRecords,
@@ -130,6 +131,14 @@ describe("remote session metadata extraction", () => {
     );
 
     expect(result).toMatchObject({ key: "abc.jsonl", cwd: "/repo/b", title: "Remote prompt", format: "jsonl" });
+  });
+});
+
+describe("empty session export fallback", () => {
+  test("creates valid jsonl containing only the session header", () => {
+    expect(emptySessionJsonl("/repo/a", "session-id", "2026-05-01T00:00:00.000Z")).toBe(
+      `${JSON.stringify({ type: "session", version: 3, id: "session-id", timestamp: "2026-05-01T00:00:00.000Z", cwd: "/repo/a" })}\n`,
+    );
   });
 });
 

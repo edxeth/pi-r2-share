@@ -12,5 +12,9 @@
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*"
-  }
+  },
+  "trustedDependencies": [
+    "koffi",
+    "protobufjs"
+  ]
 }

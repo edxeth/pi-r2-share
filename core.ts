@@ -194,6 +194,10 @@ export function truncateTitle(title: string, max = 80): string {
   return `${oneLine.slice(0, Math.max(1, max - 1)).trimEnd()}…`;
 }
 
+export function emptySessionJsonl(cwd: string, id: string, timestamp: string): string {
+  return `${JSON.stringify({ type: "session", version: 3, id, timestamp, cwd })}\n`;
+}
+
 function sessionDataInfo(data: any): { cwd?: string; title?: string } {
   const entries = Array.isArray(data?.entries) ? data.entries : [];
   let firstUser: string | undefined;

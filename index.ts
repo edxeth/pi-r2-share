@@ -7,6 +7,7 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import { Key, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
 import {
   addShareRecord,
+  emptySessionJsonl,
   filterRecords,
   getSessionTitle,
   readRegistry,
@@ -89,7 +90,7 @@ async function exists(file: string): Promise<boolean> {
   }
 }
 
-async function exportHtmlWithCurrentPi(sessionFile: string, outputPath: string): Promise<void> {
+async function exportHtmlWithCurrentPi(sessionFile: string, outputPath: string, cwd: string): Promise<void> {
   const timeout = Number(process.env.PI_SHARE_EXPORT_TIMEOUT_MS || 120_000);
   const candidates: Array<{ label: string; command: string; args: string[] }> = [];
   const seen = new Set<string>();
@@ -117,10 +118,12 @@ async function exportHtmlWithCurrentPi(sessionFile: string, outputPath: string):
   add("tia pi", "tia", ["pi"]);
   add("pi on PATH", "pi");
 
+  const sourceFile = await exists(sessionFile) ? sessionFile : await createExportableEmptySession(sessionFile, cwd);
+
   const failures: string[] = [];
   for (const c of candidates) {
     try {
-      const res = await run(c.command, [...c.args, "--export", sessionFile, outputPath], { timeout });
+      const res = await run(c.command, [...c.args, "--export", sourceFile, outputPath], { timeout });
       if (res.code === 0) return;
       failures.push(`${c.label}: exit ${res.code}\n${res.stderr || res.stdout}`.trim());
     } catch (err) {
@@ -129,6 +132,15 @@ async function exportHtmlWithCurrentPi(sessionFile: string, outputPath: string):
   }
 
   throw new Error(`pi export failed; tried ${candidates.map((c) => c.label).join(", ")}\n\n${failures.join("\n\n")}`);
+}
+
+async function createExportableEmptySession(sessionFile: string, cwd: string): Promise<string> {
+  const dir = path.join(tmpdir(), "pi-r2-share");
+  const id = path.basename(sessionFile, ".jsonl") || randomUUID();
+  const tempSession = path.join(dir, `${id}.empty.jsonl`);
+  await mkdir(dir, { recursive: true });
+  await writeFile(tempSession, emptySessionJsonl(cwd, id, new Date().toISOString()), "utf8");
+  return tempSession;
 }
 
 async function injectSessionMetadata(outputPath: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
@@ -453,10 +465,12 @@ async function doShare(args: string, ctx: ExtensionCommandContext, pi: Extension
     ctx.ui.notify(`r2-share: exporting ${format.toUpperCase()}…`, "info");
 
     if (format === "html") {
-      await exportHtmlWithCurrentPi(sessionFile, outputPath);
+      await exportHtmlWithCurrentPi(sessionFile, outputPath, ctx.cwd);
       await injectSessionMetadata(outputPath, ctx, pi);
-    } else {
+    } else if (await exists(sessionFile)) {
       await copyFile(sessionFile, outputPath);
+    } else {
+      await writeFile(outputPath, emptySessionJsonl(ctx.cwd, shareId, new Date().toISOString()), "utf8");
     }
 
     ctx.ui.notify(`r2-share: uploading R2 object ${bucket}/${objectKey}…`, "info");
