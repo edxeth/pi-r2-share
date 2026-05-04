@@ -750,12 +750,12 @@ async function doSessions(args: string, ctx: ExtensionCommandContext) {
             .catch((err) => setCopyStatus("error", `Could not copy automatically: ${err instanceof Error ? err.message : String(err)}`));
           return;
         }
-        if (data === "i" && visible[selected]) {
+        if (matchesKey(data, "i") && visible[selected]) {
           showSelectedId = !showSelectedId;
           return refresh();
         }
-        if (data === "d" && visible[selected]) return done({ type: "delete", record: visible[selected] });
-        if (data === "D" && visible.length > 0) return done({ type: "delete-visible", records: visible });
+        if (matchesKey(data, "d") && visible[selected]) return done({ type: "delete", record: visible[selected] });
+        if (matchesKey(data, "shift+d") && visible.length > 0) return done({ type: "delete-visible", records: visible });
       }
 
       function render(width: number) {
