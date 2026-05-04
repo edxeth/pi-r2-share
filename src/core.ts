@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { redactString, sanitizeForTelemetry, type RedactionConfig } from "./redaction";
 
 export type Format = "html" | "jsonl";
 
@@ -41,7 +42,7 @@ export async function readRegistry(file = defaultRegistryPath()): Promise<ShareR
   }
 }
 
-export async function writeRegistry(records: ShareRecord[], file = defaultRegistryPath()): Promise<void> {
+async function writeRegistry(records: ShareRecord[], file = defaultRegistryPath()): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
   await writeFile(tmp, `${JSON.stringify(records, null, 2)}\n`, "utf8");
@@ -128,7 +129,7 @@ export function parseExportedHtml(html: string): { cwd?: string; title?: string 
   return sessionDataInfo(data);
 }
 
-export function parseExportedJsonl(jsonl: string): { cwd?: string; title?: string } {
+function parseExportedJsonl(jsonl: string): { cwd?: string; title?: string } {
   const entries: any[] = [];
   let header: any;
   for (const line of jsonl.split(/\r?\n/)) {
@@ -177,7 +178,7 @@ export async function getSessionTitle(sessionFile: string): Promise<string> {
   return truncateTitle(latestName || firstUser || fallback);
 }
 
-export function contentToText(content: unknown): string | undefined {
+function contentToText(content: unknown): string | undefined {
   if (typeof content === "string") return content.trim() || undefined;
   if (!Array.isArray(content)) return undefined;
   const text = content
@@ -188,7 +189,7 @@ export function contentToText(content: unknown): string | undefined {
   return text || undefined;
 }
 
-export function truncateTitle(title: string, max = 80): string {
+function truncateTitle(title: string, max = 80): string {
   const oneLine = title.replace(/\s+/g, " ").trim();
   if (oneLine.length <= max) return oneLine;
   return `${oneLine.slice(0, Math.max(1, max - 1)).trimEnd()}…`;
@@ -237,3 +238,40 @@ function isShareRecord(value: any): value is ShareRecord {
     typeof value.uploadedAt === "string"
   );
 }
+
+export function sanitizeJsonl(config: RedactionConfig, content: string, env?: NodeJS.ProcessEnv): string {
+  const lines = content.split(/\r?\n/);
+  const sanitizedLines = lines.map((line) => {
+    if (!line.trim()) return line;
+    try {
+      const parsed = JSON.parse(line);
+      return JSON.stringify(sanitizeForTelemetry(config, parsed, env));
+    } catch {
+      return redactString(config, line, env);
+    }
+  });
+  return sanitizedLines.join("\n");
+}
+
+export function sanitizeHtmlSession(config: RedactionConfig, html: string, env?: NodeJS.ProcessEnv): string {
+  const match = html.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/);
+  if (!match) return html;
+
+  const data = JSON.parse(Buffer.from(match[1], "base64").toString("utf8"));
+  const sanitized = sanitizeForTelemetry(config, data, env);
+  const encoded = Buffer.from(JSON.stringify(sanitized)).toString("base64");
+
+  return html.replace(match[1], encoded);
+}
+
+export function stripAbsolutePathPrefix(content: string, prefixes: string[]): string {
+  if (!prefixes.length) return content;
+  let output = content;
+  for (const prefix of prefixes) {
+    if (!prefix) continue;
+    const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    output = output.replace(new RegExp(escaped, "g"), "[PATH_ROOT]");
+  }
+  return output;
+}
+

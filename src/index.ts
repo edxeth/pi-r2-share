@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { Key, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
 import {
@@ -13,10 +13,14 @@ import {
   readRegistry,
   remoteObjectsToShareRecords,
   removeShareRecords,
+  sanitizeHtmlSession,
+  sanitizeJsonl,
+  stripAbsolutePathPrefix,
   type Format,
   type RemoteObject,
   type ShareRecord,
 } from "./core";
+import { type RedactionConfig, scanForSecrets } from "./redaction";
 
 type Mode = "auto" | "wrangler" | "s3";
 type RunResult = { code: number | null; stdout: string; stderr: string };
@@ -24,6 +28,7 @@ type RunResult = { code: number | null; stdout: string; stderr: string };
 type ShareOptions = {
   format?: Format;
   mode?: Mode;
+  unsafe?: boolean;
 };
 
 type BrowserAction =
@@ -39,6 +44,7 @@ function parseArgs(args: string): ShareOptions {
     else if (raw === "--s3") out.mode = "s3";
     else if (raw === "--html") out.format = "html";
     else if (raw === "--json" || raw === "--jsonl") out.format = "jsonl";
+    else if (raw === "--unsafe") out.unsafe = true;
   }
   return out;
 }
@@ -439,6 +445,100 @@ function makeShareId(): string {
   return randomUUID();
 }
 
+function getRedactionConfig(): RedactionConfig {
+  const extra = process.env.PI_SHARE_ADDITIONAL_SECRETS?.trim();
+  return {
+    enabled: true,
+    additionalSecrets: extra ? extra.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
+  };
+}
+
+function checkTruffleHogAvailable(): boolean {
+  return spawnSync("trufflehog", ["--version"], { encoding: "utf-8", timeout: 10_000 }).status === 0;
+}
+
+async function runRedactAndScan(opts: {
+  file: string;
+  format: string;
+  config: ReturnType<typeof getRedactionConfig>;
+  prefixes: string[];
+}): Promise<{ findings: number }> {
+  const { Worker } = await import("node:worker_threads");
+  const workerFile = path.join(tmpdir(), `pi-r2-worker-${Date.now()}.mjs`);
+  const timeoutMs = Number(process.env.PI_SHARE_TRUFFLEHOG_TIMEOUT_MS || 120_000);
+  const extDir = path.dirname(new URL(import.meta.url).pathname);
+  await writeFile(workerFile, `
+import { parentPort } from "node:worker_threads";
+import { readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { sanitizeHtmlSession, sanitizeJsonl, stripAbsolutePathPrefix } from "${extDir}/core.ts";
+import { sanitizeForTelemetry, redactString } from "${extDir}/redaction.ts";
+
+const data = JSON.parse(process.env.PI_R2_WORKER_DATA);
+const config = { enabled: true, additionalSecrets: data.config.additionalSecrets };
+let content = readFileSync(data.file, "utf8");
+if (data.format === "html") {
+  content = sanitizeHtmlSession(config, content);
+} else {
+  content = sanitizeJsonl(config, content);
+}
+content = stripAbsolutePathPrefix(content, data.prefixes);
+writeFileSync(data.file, content, "utf8");
+
+const result = spawnSync("trufflehog", ["filesystem", "--json", data.file], {
+  encoding: "utf-8",
+  timeout: ${timeoutMs},
+  maxBuffer: 20 * 1024 * 1024,
+});
+if (result.error) {
+  parentPort.postMessage({ error: result.error.message });
+} else {
+  const combined = (result.stdout || "") + "\\n" + (result.stderr || "");
+  const findings = combined.split(/\\r?\\n/).filter(line => {
+    if (!line.startsWith("{")) return false;
+    try {
+      const parsed = JSON.parse(line);
+      return "DetectorName" in parsed || "SourceMetadata" in parsed || "Raw" in parsed || "Redacted" in parsed;
+    } catch { return false; }
+  }).length;
+  parentPort.postMessage({ findings });
+}
+`);
+  const workerData = JSON.stringify({
+    file: opts.file,
+    format: opts.format,
+    config: opts.config,
+    prefixes: opts.prefixes,
+  });
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(workerFile, { env: { ...process.env, PI_R2_WORKER_DATA: workerData } });
+    worker.on("message", (msg: any) => {
+      worker.terminate();
+      unlink(workerFile).catch(() => {});
+      if (msg.error) reject(new Error(`TruffleHog scan failed: ${msg.error}`));
+      else resolve(msg);
+    });
+    worker.on("error", (err: Error) => {
+      worker.terminate();
+      unlink(workerFile).catch(() => {});
+      reject(err);
+    });
+  });
+}
+
+function parseErrorMessage(raw: string): string {
+  if (raw.includes("401") || raw.includes("Unauthorized") || raw.includes("Authentication error") || raw.includes("Invalid access token"))
+    return "Cloudflare auth failed. Run `wrangler login` to refresh your token, then retry.";
+  if (raw.includes("bucket does not exist") || raw.includes("The specified bucket does not exist"))
+    return `Bucket not found. Create it with: wrangler r2 bucket create ${process.env.PI_SHARE_BUCKET || "<name>"}`;
+  if (raw.includes("ECONNREFUSED") || raw.includes("ENOTFOUND") || raw.includes("fetch failed"))
+    return "Network error. Check your internet connection and try again.";
+  if (raw.includes("TruffleHog scan timed out"))
+    return "TruffleHog scan timed out. Try again or use --unsafe to skip scanning.";
+  const lines = raw.split("\n").filter((l) => l.trim() && !l.startsWith("\u2718") && !l.startsWith("{") && !l.includes("Logs were written"));
+  return lines.join("\n").trim() || raw.slice(0, 200);
+}
+
 async function doShare(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI) {
   await ctx.waitForIdle();
 
@@ -462,7 +562,6 @@ async function doShare(args: string, ctx: ExtensionCommandContext, pi: Extension
 
   try {
     await mkdir(localDir, { recursive: true });
-    ctx.ui.notify(`r2-share: exporting ${format.toUpperCase()}…`, "info");
 
     if (format === "html") {
       await exportHtmlWithCurrentPi(sessionFile, outputPath, ctx.cwd);
@@ -473,7 +572,30 @@ async function doShare(args: string, ctx: ExtensionCommandContext, pi: Extension
       await writeFile(outputPath, emptySessionJsonl(ctx.cwd, shareId, new Date().toISOString()), "utf8");
     }
 
-    ctx.ui.notify(`r2-share: uploading R2 object ${bucket}/${objectKey}…`, "info");
+    const doRedact = opts.unsafe ? false : await ctx.ui.confirm(
+      "Redact secrets before sharing?",
+      "The session will be scanned for API keys, tokens, PII, and credentials.\nRequires TruffleHog. Choose No to share raw.",
+    );
+
+    if (doRedact) {
+      if (!checkTruffleHogAvailable()) {
+        ctx.ui.notify("r2-share: TruffleHog is not installed. Safe sharing requires TruffleHog for secret scanning.\nInstall: https://github.com/trufflesecurity/trufflehog or run `brew install trufflehog`\nRe-run with --unsafe to share without redaction.", "error");
+        return;
+      }
+
+      ctx.ui.notify("r2-share: redacting and scanning…", "info");
+      const result = await runRedactAndScan({
+        file: outputPath,
+        format,
+        config: getRedactionConfig(),
+        prefixes: [process.env.HOME || "", ctx.cwd, sessionFile].filter(Boolean),
+      });
+      if (result.findings > 0) {
+        ctx.ui.notify(`r2-share: TruffleHog found ${result.findings} potential secret(s) after redaction. Upload aborted.\nReview: ${outputPath}\nRe-run with --unsafe to share without redaction.`, "error");
+        return;
+      }
+    }
+
     await uploadObject(bucket, objectKey, outputPath, contentType, mode);
 
     const shareUrl = publicUrl(publicBaseUrl, objectKey);
@@ -489,10 +611,10 @@ async function doShare(args: string, ctx: ExtensionCommandContext, pi: Extension
       uploadedAt: new Date().toISOString(),
     });
 
-    ctx.ui.notify(`Saved: ${outputPath}\nShare URL: ${shareUrl}`, "info");
+    ctx.ui.notify(`r2-share: ${shareUrl}${opts.unsafe ? " (shared without redaction)" : ""}`, "info");
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    ctx.ui.notify(`r2-share failed: ${message}`, "error");
+    const raw = err instanceof Error ? err.message : String(err);
+    ctx.ui.notify(`r2-share failed: ${parseErrorMessage(raw)}`, "error");
   }
 }
 

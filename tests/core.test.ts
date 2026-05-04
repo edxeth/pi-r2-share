@@ -14,8 +14,12 @@ import {
   remoteObjectsToShareRecords,
   readRegistry,
   removeShareRecords,
+  sanitizeHtmlSession,
+  sanitizeJsonl,
+  stripAbsolutePathPrefix,
   type ShareRecord,
-} from "./core";
+} from "../src/core";
+import { type RedactionConfig } from "../src/redaction";
 
 async function tempDir() {
   return mkdtemp(path.join(tmpdir(), "pi-r2-share-test-"));
@@ -174,5 +178,103 @@ describe("session title extraction", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("JSONL sanitization", () => {
+  const ON: RedactionConfig = { enabled: true };
+
+  test("redacts secrets in valid JSONL lines", () => {
+    const input = JSON.stringify({ type: "message", message: { role: "user", content: "my key is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij" } });
+    const result = sanitizeJsonl(ON, input + "\n");
+    expect(result).toContain("[REDACTED:github-token:");
+    expect(result).not.toContain("ghp_");
+  });
+
+  test("redacts multiple lines independently", () => {
+    const lines = [
+      JSON.stringify({ type: "message", content: "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghij" }),
+      JSON.stringify({ type: "message", content: "clean line" }),
+      "",
+    ].join("\n");
+    const result = sanitizeJsonl(ON, lines);
+    const resultLines = result.split("\n");
+    expect(resultLines[0]).toContain("[REDACTED:openai-key:");
+    expect(resultLines[1]).toBe(JSON.stringify({ type: "message", content: "clean line" }));
+    expect(resultLines[2]).toBe("");
+  });
+
+  test("handles invalid JSON lines with string redaction fallback", () => {
+    const input = "not json but has ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\n";
+    const result = sanitizeJsonl(ON, input);
+    expect(result).toContain("[REDACTED:github-token:");
+  });
+
+  test("preserves empty lines", () => {
+    const input = "\n\n";
+    expect(sanitizeJsonl(ON, input)).toBe("\n\n");
+  });
+
+  test("redacts sensitive object fields", () => {
+    const input = JSON.stringify({ type: "config", password: "hunter2" });
+    const result = sanitizeJsonl(ON, input);
+    const parsed = JSON.parse(result.trim());
+    expect(parsed.password).toContain("[REDACTED:");
+  });
+});
+
+describe("HTML session sanitization", () => {
+  const ON: RedactionConfig = { enabled: true };
+
+  test("redacts secrets inside session-data payload", () => {
+    const data = { header: { cwd: "/repo/a" }, entries: [{ type: "message", message: { role: "user", content: "key: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij" } }] };
+    const encoded = Buffer.from(JSON.stringify(data)).toString("base64");
+    const html = `<!DOCTYPE html><html><body><script id="session-data" type="application/json">${encoded}</script></body></html>`;
+
+    const result = sanitizeHtmlSession(ON, html);
+    expect(result).toContain("[REDACTED:github-token:");
+    expect(result).not.toContain("ghp_");
+
+    const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/);
+    expect(match).toBeTruthy();
+    const decoded = JSON.parse(Buffer.from(match![1], "base64").toString());
+    expect(decoded.header.cwd).toBe("/repo/a");
+  });
+
+  test("returns HTML unchanged when no session-data script tag exists", () => {
+    const html = "<!DOCTYPE html><html><body><p>Hello</p></body></html>";
+    expect(sanitizeHtmlSession(ON, html)).toBe(html);
+  });
+
+  test("preserves HTML structure outside session-data", () => {
+    const data = { entries: [] };
+    const encoded = Buffer.from(JSON.stringify(data)).toString("base64");
+    const html = `<!DOCTYPE html><html><head><title>Test</title></head><body><script id="session-data" type="application/json">${encoded}</script><p>Footer</p></body></html>`;
+
+    const result = sanitizeHtmlSession(ON, html);
+    expect(result).toContain("<title>Test</title>");
+    expect(result).toContain("<p>Footer</p>");
+  });
+});
+
+describe("path prefix stripping", () => {
+  test("replaces known path prefixes", () => {
+    const content = "file: /home/user/project/src/index.ts and /home/user/project/lib/utils.ts";
+    expect(stripAbsolutePathPrefix(content, ["/home/user/project"])).toBe(
+      "file: [PATH_ROOT]/src/index.ts and [PATH_ROOT]/lib/utils.ts",
+    );
+  });
+
+  test("handles no prefixes", () => {
+    const content = "no paths here";
+    expect(stripAbsolutePathPrefix(content, [])).toBe("no paths here");
+  });
+
+  test("handles empty content", () => {
+    expect(stripAbsolutePathPrefix("", ["/foo"])).toBe("");
+  });
+
+  test("handles empty prefix in array", () => {
+    expect(stripAbsolutePathPrefix("hello", [""])).toBe("hello");
   });
 });
