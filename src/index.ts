@@ -526,6 +526,64 @@ if (result.error) {
   });
 }
 
+async function chooseFormat(ctx: ExtensionCommandContext): Promise<Format> {
+  if (!ctx.hasUI) return "html";
+
+  return ctx.ui.custom<Format>((tui, theme, _keybindings, done) => {
+    let selected = 0;
+    let cached: string[] | undefined;
+
+    function handleInput(data: string) {
+      if (matchesKey(data, Key.up)) {
+        selected = 0;
+        cached = undefined;
+        tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, Key.down)) {
+        selected = 1;
+        cached = undefined;
+        tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, Key.enter)) {
+        done(selected === 0 ? "html" : "jsonl");
+        return;
+      }
+      if (matchesKey(data, Key.escape)) {
+        done("html");
+        return;
+      }
+    }
+
+    function render(width: number) {
+      if (cached) return cached;
+
+      const lines: string[] = [];
+      const add = (line = "") => lines.push(truncateToWidth(line, width));
+
+      add(theme.fg("accent", "─".repeat(width)));
+      add(`${theme.fg("accent", theme.bold(" Export format"))}`);
+      add(theme.fg("dim", " \u2191\u2193 navigate \u2022 Enter select \u2022 Esc cancel (defaults to HTML)"));
+      add("");
+
+      const htmlLabel = selected === 0 ? "\u25cf HTML (web page)" : "\u25cb HTML (web page)";
+      const jsonlLabel = selected === 1 ? "\u25cf JSONL (raw session)" : "\u25cb JSONL (raw session)";
+
+      add(`  ${selected === 0 ? theme.fg("accent", htmlLabel) : theme.fg("text", htmlLabel)}`);
+      add(`  ${selected === 1 ? theme.fg("accent", jsonlLabel) : theme.fg("text", jsonlLabel)}`);
+
+      add("");
+      add(theme.fg("accent", "─".repeat(width)));
+
+      cached = lines;
+      return lines;
+    }
+
+    return { render, invalidate: () => { cached = undefined; }, handleInput };
+  });
+}
+
 function parseErrorMessage(raw: string): string {
   if (raw.includes("401") || raw.includes("Unauthorized") || raw.includes("Authentication error") || raw.includes("Invalid access token"))
     return "Cloudflare auth failed. Run `wrangler login` to refresh your token, then retry.";
@@ -552,7 +610,7 @@ async function doShare(args: string, ctx: ExtensionCommandContext, pi: Extension
   const bucket = requiredEnv("PI_SHARE_BUCKET");
   const publicBaseUrl = requiredEnv("PI_SHARE_PUBLIC_URL");
   const mode = opts.mode || (process.env.PI_SHARE_MODE as Mode) || "auto";
-  const format = opts.format || "html";
+  const format = opts.format || (await chooseFormat(ctx));
   const ext = extensionFor(format);
   const shareId = makeShareId();
   const localDir = path.join(tmpdir(), "pi-r2-share");
