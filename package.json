@@ -11,10 +11,15 @@
     "extensions": ["./index.ts"]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*"
+    "@mariozechner/pi-coding-agent": "^0.72.1"
   },
   "trustedDependencies": [
     "koffi",
     "protobufjs"
-  ]
+  ],
+  "dependencies": {
+    "@mariozechner/pi-agent-core": "^0.72.1",
+    "@mariozechner/pi-ai": "^0.72.1",
+    "@mariozechner/pi-tui": "^0.72.1"
+  }
 }
