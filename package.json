@@ -11,13 +11,13 @@
     "extensions": ["./src/index.ts"]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.72.1"
+    "@earendil-works/pi-coding-agent": "^0.75.4"
   },
   "trustedDependencies": [
     "koffi",
     "protobufjs"
   ],
   "dependencies": {
-    "@mariozechner/pi-tui": "^0.72.1"
+    "@earendil-works/pi-tui": "^0.75.4"
   }
 }

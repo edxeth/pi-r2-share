@@ -1,10 +1,10 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { access, copyFile, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { Key, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
+import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
   addShareRecord,
   emptySessionJsonl,
