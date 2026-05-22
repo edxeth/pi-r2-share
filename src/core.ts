@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { redactString, sanitizeForTelemetry, type RedactionConfig } from "./redaction";
+import { redactString, sanitizeForTelemetry, type RedactionConfig } from "./redaction.ts";
 
 export type Format = "html" | "jsonl";
 

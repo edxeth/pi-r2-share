@@ -19,8 +19,8 @@ import {
   type Format,
   type RemoteObject,
   type ShareRecord,
-} from "./core";
-import { type RedactionConfig, scanForSecrets } from "./redaction";
+} from "./core.ts";
+import { type RedactionConfig, scanForSecrets } from "./redaction.ts";
 
 type Mode = "auto" | "wrangler" | "s3";
 type RunResult = { code: number | null; stdout: string; stderr: string };
