@@ -1,6 +1,6 @@
 {
   "name": "pi-r2-share",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Share pi sessions via Cloudflare R2 instead of GitHub Gist/pi.dev",
   "keywords": ["pi-package"],
   "type": "module",
