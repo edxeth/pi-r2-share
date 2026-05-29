@@ -1,5 +1,14 @@
 # pi-r2-share
 
+## 🌐 **Join the Community**
+
+> [!NOTE]
+> **Building with AI doesn’t have to be a solo grind.**  
+> Join our Discord community to meet other people exploring the latest models, tools, workflows, and ideas: **https://discord.gg/whhrDtCrSS**
+>
+> We talk about what’s new, what’s useful, and what’s actually worth paying attention to in AI.  
+> *And if you want more than conversation,* members also get access to **heavily discounted AI products and services** — including deals on tools like **ChatGPT Plus** and more for just a few dollars.
+
 Session sharing for [Pi Coding Agent](https://github.com/mariozechner/pi-coding-agent) through your own Cloudflare R2 bucket — **with built-in secret redaction and TruffleHog scanning before anything leaves your machine.**
 
 Pi's built-in `/share` uploads to `pi.dev/session` behind GitHub-proxied infrastructure. When it works, it works. When the proxy rate-limits you — mid-demo, mid-handoff, mid-debug — there's no fallback. You get a failure and a dead end. Nothing gets redacted either — every API key, email, and credential in your session ships to a third party as-is. The exported HTML also dumps the entire available-tools list as an uncollapsed wall of text — no way to fold it away.
